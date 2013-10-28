@@ -10,6 +10,9 @@ class Tagger(object):
     emission_counts = {}
     ngrams = {}
 
+    # pi_cache used to improve performance of Viterbi algorithm
+    pi_cache = {}
+
     # define the specialty categories to group infrequent words
     category_keywords = ['_RARE_']
     rare_cnt_threshold = 5
@@ -20,8 +23,94 @@ class Tagger(object):
         '''
         return self.category_keywords[0]
 
-    def get_tag(self, word):
+    def get_sentence_tags(self, sentence):
+        ''' Run viterbi algorithm to get arg max tags for the given
+            (space-separated) sentence
+        '''
+        max_prob = 0
+        max_tags = []
+        n = len(sentence)
+        # clear pi_cache
+        self.pi_cache = {}
+        # Find max ending tag-pair using (recursive) Viterbi algorithm
+        for u in self.trained_tag_counts:
+            # Check for reasons to skip whole Viterbi algorithm
+            # Case 1, u tag never emits required word
+            if self.get_emission_prob(sentence[-2], u) == 0:
+                continue
+            for v in self.trained_tag_counts:
+                # Case 2, no tag-sequence ends in u,v,STOP
+                if self.get_trigram_prob('STOP', u, v) == 0:
+                    continue
+                # Case 3
+                if self.get_emission_prob(sentence[-1], v) == 0:
+                    continue
+
+                tags, prob = self.pi(n, u, v, sentence)
+                if prob * self.get_trigram_prob('STOP', u, v) > max_prob:
+                    max_prob = prob
+                    max_tags = tags
+        # Remove initial start tags from max_tags list
+        max_tags = max_tags[2:]
+        return (max_tags, max_prob)
+
+    def pi(self, k, u, v, sentence):
+        ''' helper function for Viterbit algorithm
+            This method is recursive. It traverses a sentence in reverse
+            to calculate the most likely sequence of tags, based on
+            likely tag-sequences (from HMM counts) and likely emissions
+        '''
+        word = sentence[k-1]
+        if word not in self.trained_word_counts or self.trained_word_counts[word] < self.rare_cnt_threshold:
+            # This word was not in training set, so assume it is a RARE keyword
+            word = self.get_rare_keyword(word)
+        
+        if k>0:
+            # Check for reasons to halt recursive algorithm
+            if (self.get_emission_prob(word, v) == 0 #Case 1, u tag never emits required word
+                    or ' '.join([u,v]) not in self.ngrams == 0 #Case 2, no tag-sequence of (u,v) in training set
+                    or self.get_emission_prob(word, v) == 0 #Case 3, tag v never emits word
+                    ): 
+                return ([], 0)
+
+        # Check for cached pi(k,u,v) value
+        if (k,u,v) in self.pi_cache:
+            return self.pi_cache[(k,u,v)]
+        # Check for base case
+        elif k==0:
+            if u=='*' and v=='*':
+                max_prob = 1
+                max_tags = ['*', '*']
+            else:
+                max_prob = 0
+                max_tags = ['*', '*']
+        # If k is 2nd word or less, then we need to set w='*'
+        elif k in [1,2]:
+            w = '*'
+            max_tags, max_prob = self.pi(k-1, w, u, sentence)
+            if max_prob != 0:
+                max_prob *= self.get_trigram_prob(v, w, u)
+                max_prob *= self.get_emission_prob(word, v)
+                max_tags = max_tags+[v]
+        # Return most likely tag for k-2nd word, iterate over all tags
+        else:
+            max_prob = 0
+            max_tags = []
+            for w in self.trained_tag_counts:
+                tags, prob = self.pi(k-1, w, u, sentence)
+                if prob != 0:
+                    prob *= self.get_trigram_prob(v, w, u)
+                    prob *= self.get_emission_prob(word, v)
+                    if prob > max_prob:
+                        max_prob = prob
+                        max_tags = tags+[v]
+        if (k,u,v) not in self.pi_cache:
+            self.pi_cache[(k,u,v)] = (max_tags, max_prob)
+        return (max_tags, max_prob)
+
+    def get_word_tag(self, word):
         ''' Calculate the most likely tag for the given input word and return tag
+            * calculation based solely on emission; arg(y) max p(y=>word)
             @return tuple (tag, probability) example: ("I-GENE", 0.00045)
         '''
         if word not in self.trained_word_counts or self.trained_word_counts[word] < self.rare_cnt_threshold:
@@ -36,6 +125,25 @@ class Tagger(object):
                 max_tag = tag
         return (max_tag, max_prob)
 
+    def get_trigram_prob(self, tag, prior2, prior1):
+        ''' Return the probability of the given tag following the given 2 prior tags
+            q(tag|prior2, prior1) = count(prior2 prior1 tag) / count(prior2 prior1)
+        '''
+        uvs = ' '.join([prior2, prior1, tag])
+        if uvs in self.ngrams:
+            uvs_cnt = self.ngrams[uvs]
+        else:
+            uvs_cnt = 0
+        uv = ' '.join([prior2, prior1])
+        if uv in self.ngrams:
+            uv_cnt = self.ngrams[uv]
+        else:
+            uv_cnt = 0
+            # Cannot divide by zero, so just return 0 here instead of error-ing out
+            return 0
+        return float(uvs_cnt)/uv_cnt
+
+
     def get_emission_prob(self, word, tag):
         ''' Return the probability of the given tag emitting the given word
             e(x|s) = count(s=>x) / count(s)
@@ -45,7 +153,6 @@ class Tagger(object):
         else:
             emit_cnt = self.emission_counts[tag][word]
             tag_cnt = self.trained_tag_counts[tag]
-            #tag_cnt = sum([self.trained_tag_counts[tag][w] for w in self.trained_tag_counts[tag]])
             return float(emit_cnt)/tag_cnt
 
     def flag_rare_words(self):
@@ -128,17 +235,26 @@ class Tagger(object):
             ofile = open(output_filename, 'w')
         except:
             raise Exception('Cannot open file: %s' % output_filename)
-        # Read each word in input_file and write the tag to output
+
+        # Read each sentence in input_file and write with proper tags to output
+        sentence = []
+        sent_cnt = 1
         for i,row in enumerate(ifile.readlines()):
             if i%500==0:
                 print 'Processing row %s...' %i
 
             word = row.strip()
             if word=='':
+                print 'Tagging sentence', sent_cnt, '(# words= ', len(sentence), ')'
+                tags, prob = self.get_sentence_tags(sentence)
+                print '    prob=', prob
+                for i in range(len(sentence)):
+                    ofile.write(' '.join([sentence[i], tags[i]]) + '\n')
                 ofile.write('\n')
+                sentence = []
+                sent_cnt += 1
             else:
-                tag, max_prob = self.get_tag(word)
-                ofile.write(' '.join([word, tag]) + '\n')
+                sentence.append(word)
         ifile.close()
         ofile.close()
         return
