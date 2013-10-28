@@ -23,27 +23,38 @@ class Tagger(object):
         '''
         return self.category_keywords[0]
 
+    def get_word_or_keyword(self, word):
+        ''' If the given word is rare, return the appropriate RARE keyword,
+            else just return the given word
+        '''
+        if word not in self.trained_word_counts or self.trained_word_counts[word] < self.rare_cnt_threshold:
+            # This word was not in training set, so assume it is a RARE keyword
+            word = self.get_rare_keyword(word)
+        return word
+
     def get_sentence_tags(self, sentence):
         ''' Run viterbi algorithm to get arg max tags for the given
             (space-separated) sentence
         '''
         max_prob = 0
-        max_tags = []
+        max_tags = ['Default']
         n = len(sentence)
         # clear pi_cache
         self.pi_cache = {}
         # Find max ending tag-pair using (recursive) Viterbi algorithm
         for u in self.trained_tag_counts:
+            word = self.get_word_or_keyword(sentence[-2])
             # Check for reasons to skip whole Viterbi algorithm
             # Case 1, u tag never emits required word
-            if self.get_emission_prob(sentence[-2], u) == 0:
+            if self.get_emission_prob(word, u) == 0:
                 continue
             for v in self.trained_tag_counts:
                 # Case 2, no tag-sequence ends in u,v,STOP
                 if self.get_trigram_prob('STOP', u, v) == 0:
                     continue
                 # Case 3
-                if self.get_emission_prob(sentence[-1], v) == 0:
+                word = self.get_word_or_keyword(sentence[-1])
+                if self.get_emission_prob(word, v) == 0:
                     continue
 
                 tags, prob = self.pi(n, u, v, sentence)
@@ -60,18 +71,15 @@ class Tagger(object):
             to calculate the most likely sequence of tags, based on
             likely tag-sequences (from HMM counts) and likely emissions
         '''
-        word = sentence[k-1]
-        if word not in self.trained_word_counts or self.trained_word_counts[word] < self.rare_cnt_threshold:
-            # This word was not in training set, so assume it is a RARE keyword
-            word = self.get_rare_keyword(word)
-        
+        word = self.get_word_or_keyword(sentence[k-1])
+
         if k>0:
             # Check for reasons to halt recursive algorithm
             if (self.get_emission_prob(word, v) == 0 #Case 1, u tag never emits required word
                     or ' '.join([u,v]) not in self.ngrams == 0 #Case 2, no tag-sequence of (u,v) in training set
                     or self.get_emission_prob(word, v) == 0 #Case 3, tag v never emits word
-                    ): 
-                return ([], 0)
+                    ):
+                return (['Break case'], 0)
 
         # Check for cached pi(k,u,v) value
         if (k,u,v) in self.pi_cache:
@@ -95,7 +103,7 @@ class Tagger(object):
         # Return most likely tag for k-2nd word, iterate over all tags
         else:
             max_prob = 0
-            max_tags = []
+            max_tags = ['Initial Pi']
             for w in self.trained_tag_counts:
                 tags, prob = self.pi(k-1, w, u, sentence)
                 if prob != 0:
@@ -113,9 +121,7 @@ class Tagger(object):
             * calculation based solely on emission; arg(y) max p(y=>word)
             @return tuple (tag, probability) example: ("I-GENE", 0.00045)
         '''
-        if word not in self.trained_word_counts or self.trained_word_counts[word] < self.rare_cnt_threshold:
-            # This word was not in training set, so assume it is a RARE keyword
-            word = self.get_rare_keyword(word)
+        word = self.get_word_or_keyword(word)
         max_tag = None
         max_prob = 0
         for tag in self.emission_counts:
