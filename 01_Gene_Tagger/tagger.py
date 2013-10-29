@@ -37,10 +37,11 @@ class Tagger(object):
             (space-separated) sentence
         '''
         max_prob = 0
-        max_tags = ['Default']
+        max_tags = []
         n = len(sentence)
         # clear pi_cache
         self.pi_cache = {}
+        self.bp_cache = [None]*n
         # Find max ending tag-pair using (recursive) Viterbi algorithm
         for u in self.trained_tag_counts:
             word = self.get_word_or_keyword(sentence[-2])
@@ -75,11 +76,9 @@ class Tagger(object):
 
         if k>0:
             # Check for reasons to halt recursive algorithm
-            if (self.get_emission_prob(word, v) == 0 #Case 1, u tag never emits required word
-                    or ' '.join([u,v]) not in self.ngrams == 0 #Case 2, no tag-sequence of (u,v) in training set
-                    or self.get_emission_prob(word, v) == 0 #Case 3, tag v never emits word
-                    ):
-                return (['Break case'], 0)
+            emit_prob = self.get_emission_prob(word, v)
+            if emit_prob == 0:
+                return ([], 0)
 
         # Check for cached pi(k,u,v) value
         if (k,u,v) in self.pi_cache:
@@ -92,23 +91,19 @@ class Tagger(object):
             else:
                 max_prob = 0
                 max_tags = ['*', '*']
-        # If k is 2nd word or less, then we need to set w='*'
-        elif k in [1,2]:
-            w = '*'
-            max_tags, max_prob = self.pi(k-1, w, u, sentence)
-            if max_prob != 0:
-                max_prob *= self.get_trigram_prob(v, w, u)
-                max_prob *= self.get_emission_prob(word, v)
-                max_tags = max_tags+[v]
         # Return most likely tag for k-2nd word, iterate over all tags
         else:
+            if k in [1,2]:
+                poss_tags = ['*']
+            else:
+                poss_tags = self.trained_tag_counts
             max_prob = 0
-            max_tags = ['Initial Pi']
-            for w in self.trained_tag_counts:
+            max_tags = []
+            for w in poss_tags:
                 tags, prob = self.pi(k-1, w, u, sentence)
                 if prob != 0:
                     prob *= self.get_trigram_prob(v, w, u)
-                    prob *= self.get_emission_prob(word, v)
+                    prob *= emit_prob
                     if prob > max_prob:
                         max_prob = prob
                         max_tags = tags+[v]
@@ -139,14 +134,9 @@ class Tagger(object):
         if uvs in self.ngrams:
             uvs_cnt = self.ngrams[uvs]
         else:
-            uvs_cnt = 0
-        uv = ' '.join([prior2, prior1])
-        if uv in self.ngrams:
-            uv_cnt = self.ngrams[uv]
-        else:
-            uv_cnt = 0
-            # Cannot divide by zero, so just return 0 here instead of error-ing out
             return 0
+        uv = ' '.join([prior2, prior1])
+        uv_cnt = self.ngrams[uv]
         return float(uvs_cnt)/uv_cnt
 
 
