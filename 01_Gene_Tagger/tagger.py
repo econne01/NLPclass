@@ -60,7 +60,7 @@ class Tagger(object):
 
                 tags, prob = self.pi(n, u, v, sentence)
                 if prob * self.get_trigram_prob('STOP', u, v) > max_prob:
-                    max_prob = prob
+                    max_prob = prob * self.get_trigram_prob('STOP', u, v)
                     max_tags = tags
         # Remove initial start tags from max_tags list
         max_tags = max_tags[2:]
