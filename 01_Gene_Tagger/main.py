@@ -7,7 +7,7 @@ if __name__ == '__main__':
     train_filename = os.getcwd() + r'/gene.train'
     count_filename = os.getcwd() + r'/gene.counts'
     dev_filename = os.getcwd() + r'/gene.dev'
-    output_filename = os.getcwd() + r'/gene_dev.p2.out'
+    output_filename = os.getcwd() + r'/gene_dev.p3.out'
 
     tagger = Tagger()
     tagger.read_tag_count_file(count_filename)
